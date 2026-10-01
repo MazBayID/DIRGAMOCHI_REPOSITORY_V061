@@ -1,0 +1,82 @@
+name: Build Dirgamochi-C3 firmware
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      enable_audio:
+        description: "Build the audio-enabled environment too"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO and esptool
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade platformio esptool
+
+      - name: Extract face/audio/logo assets (zips + PNG -> bitmap/ADPCM sources)
+        run: |
+          pip install pillow
+          python tools/generate_assets.py --force
+          ls -la src/generated include/generated
+
+      - name: Build base firmware (audio OFF)
+        run: pio run -e esp32-c3-supermini
+
+      - name: Build audio-enabled firmware
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_audio == true }}
+        run: pio run -e esp32-c3-supermini-audio
+
+      - name: Package flashable images
+        run: |
+          set -e
+          mkdir -p dist
+          for ENVDIR in .pio/build/esp32-c3-supermini .pio/build/esp32-c3-supermini-audio; do
+            if [ ! -d "$ENVDIR" ]; then continue; fi
+            NAME=$(basename "$ENVDIR")
+            echo "Packaging $NAME"
+            cp "$ENVDIR/firmware.bin" "dist/${NAME}-firmware.bin"
+
+            MERGE_ARGS="0x0 $ENVDIR/bootloader.bin 0x8000 $ENVDIR/partitions.bin"
+            if [ -f "$ENVDIR/boot_app0.bin" ]; then
+              MERGE_ARGS="$MERGE_ARGS 0xe000 $ENVDIR/boot_app0.bin"
+            fi
+            MERGE_ARGS="$MERGE_ARGS 0x10000 $ENVDIR/firmware.bin"
+
+            python -m esptool --chip esp32c3 merge_bin \
+              -o "dist/${NAME}-merged.bin" \
+              --flash_mode dio --flash_freq 80m --flash_size 4MB \
+              $MERGE_ARGS
+          done
+          ls -la dist
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dirgamochi-c3-firmware
+          path: dist/*.bin
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.bin
