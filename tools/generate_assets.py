@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+import os
+if '__file__' not in globals():
+    __file__ = os.path.abspath("tools/generate_assets.py")
+  
 """
 Converts the Dirgamochi bitmap face animations and voice clips into
 generated C++ sources, before every build:
